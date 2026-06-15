@@ -1,0 +1,64 @@
+name: Update DXY Data
+
+on:
+  schedule:
+    # 06:00 Bangkok time (ICT = UTC+7)  →  23:00 UTC
+    # Runs Mon–Fri; markets are closed weekends
+    - cron: "0 23 * * 1-5"
+
+  workflow_dispatch:   # manual trigger from GitHub Actions UI
+
+permissions:
+  contents: write      # required to push updated data files
+
+jobs:
+  fetch-and-commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1       # we only need the latest state
+
+      # ── 2. Python ────────────────────────────────────────────────────────────
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      # No third-party dependencies — stdlib only
+
+      # ── 3. Fetch DXY data ────────────────────────────────────────────────────
+      - name: Fetch DXY data and convert to CSV + JSON
+        run: python scripts/fetch_dxy.py
+
+      # ── 4. Show what changed ─────────────────────────────────────────────────
+      - name: Show diff summary
+        run: |
+          echo "=== meta.json ==="
+          cat data/meta.json
+          echo ""
+          echo "=== last 5 rows of dxy.csv ==="
+          tail -5 data/dxy.csv
+
+      # ── 5. Commit if anything changed ────────────────────────────────────────
+      - name: Commit and push updates
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add data/dxy.csv data/dxy.json data/meta.json
+
+          if git diff --cached --quiet; then
+            echo "No changes – market may have been closed. Skipping commit."
+          else
+            TODAY=$(date -u '+%Y-%m-%d')
+            ROWS=$(python3 -c "import json; d=json.load(open('data/meta.json')); print(d['rows'])")
+            git commit -m "data: DXY update ${TODAY} (${ROWS} rows total)"
+            git push
+            echo "✅ Pushed updated data to GitHub."
+          fi
