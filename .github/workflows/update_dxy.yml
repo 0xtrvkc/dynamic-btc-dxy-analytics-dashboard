@@ -1,0 +1,58 @@
+name: Update DXY Data
+
+on:
+  schedule:
+    # 06:00 Bangkok time (ICT = UTC+7)  →  23:00 UTC, Mon–Fri
+    - cron: "0 23 * * 1-5"
+
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fetch-and-commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install yfinance pandas
+
+      - name: Fetch DXY data and convert to CSV + JSON
+        run: python scripts/fetch_dxy.py
+
+      - name: Show summary
+        run: |
+          echo "=== meta.json ==="
+          cat data/meta.json
+          echo ""
+          echo "=== last 5 rows ==="
+          tail -5 data/dxy.csv
+
+      - name: Commit and push
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add data/dxy.csv data/dxy.json data/meta.json
+
+          if git diff --cached --quiet; then
+            echo "No changes – skipping commit."
+          else
+            TODAY=$(date -u '+%Y-%m-%d')
+            ROWS=$(python3 -c "import json; print(json.load(open('data/meta.json'))['rows'])")
+            git commit -m "data: DXY update ${TODAY} (${ROWS} rows)"
+            git push
+            echo "✅ Pushed."
+          fi
