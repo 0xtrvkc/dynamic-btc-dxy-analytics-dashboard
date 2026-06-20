@@ -1,5 +1,6 @@
 # BTC Cycle / DXY Regime Analytics
 
+live : https://0xtrvkc.github.io/dynamic-btc-dxy-analytics-dashboard/
 A self-contained, browser-based dashboard that analyzes Bitcoin's halving cycles against the US Dollar Index (DXY) — zone classification, peak/trough regression, forward projections, and walk-forward backtesting. Built in an SPSS-style output-viewer aesthetic: dense tables, numbered statistical blocks, minimal chrome.
 
 No build step, no backend, no API keys. Open `index.html` in a browser and it fetches live data on its own.
