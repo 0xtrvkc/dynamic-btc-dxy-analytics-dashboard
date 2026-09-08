@@ -1,8 +1,8 @@
 {
   "ticker": "DX-Y.NYB",
   "source": "Yahoo Finance / stooq",
-  "last_updated": "2026-09-05T00:43:49Z",
-  "rows": 4449,
+  "last_updated": "2026-09-08T01:00:34Z",
+  "rows": 4450,
   "date_from": "2009-01-02",
-  "date_to": "2026-09-04"
+  "date_to": "2026-09-07"
 }
