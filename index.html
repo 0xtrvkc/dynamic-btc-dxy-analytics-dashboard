@@ -600,7 +600,7 @@ const Stats = (() => {
   // ---------- linear regression (least squares), with R^2 and slope SE ----------
   function linreg(xs, ys) {
     const n = xs.length;
-    if (n < 2) return null;
+    if (n < 2 || ys.length !== n || !xs.every(Number.isFinite) || !ys.every(Number.isFinite)) return null;
     const mx = xs.reduce((a, b) => a + b, 0) / n;
     const my = ys.reduce((a, b) => a + b, 0) / n;
     let sxx = 0, sxy = 0;
@@ -795,6 +795,9 @@ const Stats = (() => {
     return { value: Math.pow(10, logPred), fit: r };
   }
   function modelB_dxyConditioned(dxyVals, logVals, predictDxy) {
+    if (!Number.isFinite(predictDxy)) return null;
+    const pairs = dxyVals.map((x, i) => [x, logVals[i]]).filter(([x,y]) => Number.isFinite(x) && Number.isFinite(y));
+    dxyVals = pairs.map(p => p[0]); logVals = pairs.map(p => p[1]);
     const r = linreg(dxyVals, logVals);
     if (!r) return null;
     const logPred = r.slope * predictDxy + r.intercept;
@@ -816,7 +819,7 @@ const Stats = (() => {
     return { value: vals[vals.length - 1] * nextMultiple, impliedMultiple: nextMultiple };
   }
 
-  function buildProjections(cycles, adjusted) {
+  function buildProjections(cycles, adjusted, conditioningDxy = null) {
     const completed = cycles.filter(c => c.status === "completed" && !c.isGenesis).map(c => c.n);
     const ongoing = cycles.find(c => c.status === "ongoing" && !c.isGenesis);
     if (completed.length < 2 || !ongoing) return { available: false };
@@ -829,7 +832,7 @@ const Stats = (() => {
     const troughValsAll = completed.map(n => adjusted[n].troughPrice);
 
     const predictN = ongoing.n;
-    const latestDxyAvg = adjusted[ongoing.n] ? adjusted[ongoing.n].dxyAtPeak : dxyPeakAll[dxyPeakAll.length - 1];
+    const latestDxyAvg = Number.isFinite(conditioningDxy) ? conditioningDxy : null;
 
     const peakModels = {
       A: modelA_logLinearCycle(completed, peakLogAll, predictN),
@@ -852,7 +855,7 @@ const Stats = (() => {
   }
 
   // ---------- 7. Walk-forward backtest ----------
-  function backtest(cycles, adjusted) {
+  function backtest(cycles, adjusted, dxyOnOrBefore) {
     const completed = cycles.filter(c => c.status === "completed" && !c.isGenesis).map(c => c.n);
     const rows = [];
     for (let k = 2; k < completed.length; k++) {
@@ -869,15 +872,15 @@ const Stats = (() => {
 
       const actualPeak = adjusted[targetN].peakPrice;
       const actualTrough = adjusted[targetN].troughPrice;
-      const actualDxyAtPeak = adjusted[targetN].dxyAtPeak;
-      const actualDxyAtTrough = adjusted[targetN].dxyAtTrough;
+      const forecastOrigin = cycles.find(c => c.n === targetN).start;
+      const originDxy = typeof dxyOnOrBefore === "function" ? dxyOnOrBefore(forecastOrigin) : null;
 
       const mA_peak = modelA_logLinearCycle(trainNums, peakLog, targetN);
-      const mB_peak = modelB_dxyConditioned(dxyPeak, peakLog, actualDxyAtPeak);
+      const mB_peak = modelB_dxyConditioned(dxyPeak, peakLog, originDxy);
       const mC_peak = modelC_decayingMultiple(peakVals);
 
       const mA_trough = modelA_logLinearCycle(trainNums, troughLog, targetN);
-      const mB_trough = modelB_dxyConditioned(dxyTrough, troughLog, actualDxyAtTrough);
+      const mB_trough = modelB_dxyConditioned(dxyTrough, troughLog, originDxy);
       const mC_trough = modelC_decayingMultiple(troughVals);
 
       function pctErr(pred, actual) { return pred != null ? (pred - actual) / actual * 100 : null; }
@@ -885,16 +888,17 @@ const Stats = (() => {
       rows.push({
         trainCycles: trainNums.slice(),
         targetCycle: targetN,
+        forecastOrigin, conditioningDxy: originDxy,
         peak: {
           actual: actualPeak,
           A: mA_peak ? { pred: mA_peak.value, err: pctErr(mA_peak.value, actualPeak) } : null,
-          B: mB_peak ? { pred: mB_peak.value, err: pctErr(mB_peak.value, actualPeak), note: "uses actual target DXY-at-peak (lookahead input)" } : null,
+          B: mB_peak ? { pred: mB_peak.value, err: pctErr(mB_peak.value, actualPeak), note: "DXY frozen at or before halving-day close", conditioningDxy: originDxy } : null,
           C: mC_peak ? { pred: mC_peak.value, err: pctErr(mC_peak.value, actualPeak) } : null
         },
         trough: {
           actual: actualTrough,
           A: mA_trough ? { pred: mA_trough.value, err: pctErr(mA_trough.value, actualTrough) } : null,
-          B: mB_trough ? { pred: mB_trough.value, err: pctErr(mB_trough.value, actualTrough), note: "uses actual target DXY-at-trough (lookahead input)" } : null,
+          B: mB_trough ? { pred: mB_trough.value, err: pctErr(mB_trough.value, actualTrough), note: "DXY frozen at or before halving-day close", conditioningDxy: originDxy } : null,
           C: mC_trough ? { pred: mC_trough.value, err: pctErr(mC_trough.value, actualTrough) } : null
         }
       });
@@ -1428,7 +1432,7 @@ function renderProjections(model) {
   <div class="output-block">
     <div class="output-head"><h2>Model B input caveat</h2><span class="ohead-tag">METHODOLOGY NOTE</span></div>
     <div class="output-body">
-      Model B needs a DXY value <em>at the future cycle's eventual extreme</em> as input — which does not exist yet for an ongoing cycle. The figure used (DXY=${Fmt.num(proj.conditioningDxy,2)}) is the DXY level observed at the current cycle's peak-so-far, used as a scenario placeholder, <strong>not a dollar forecast</strong>. If the dollar index is materially higher or lower when Cycle ${proj.predictForCycle} actually tops out, Model B's number changes substantially. This is disclosed rather than smoothed over because presenting it as a clean forecast would overstate what the model can know in advance.
+      Model B needs a DXY value <em>at the future cycle's eventual extreme</em> as input — which does not exist yet for an ongoing cycle. The figure used (DXY=${Fmt.num(proj.conditioningDxy,2)}) is the latest DXY close available on or before the BTC observation date, used as a scenario placeholder, <strong>not a dollar forecast</strong>. If the dollar index is materially higher or lower when Cycle ${proj.predictForCycle} actually tops out, Model B's number changes substantially. This is disclosed rather than smoothed over because presenting it as a clean forecast would overstate what the model can know in advance.
     </div>
   </div>`;
 }
@@ -1456,7 +1460,7 @@ function renderBacktest(model) {
     }
     return `
     <tr>
-      <td rowspan="2">Held out: Cycle ${row.targetCycle}<br><span class="muted small">(trained on ${row.trainCycles.join(",")} only, blind to ${row.targetCycle})</span></td>
+      <td rowspan="2">Held out: Cycle ${row.targetCycle}<br><span class="muted small">(trained on ${row.trainCycles.join(",")} only; frozen ${row.forecastOrigin}, DXY ${Fmt.num(row.conditioningDxy,2)})</span></td>
       <td>Peak</td><td>${Fmt.usd(row.peak.actual,0)}</td>${cell(row.peak.A)}${cell(row.peak.B)}${cell(row.peak.C)}
     </tr>
     <tr>
@@ -1505,7 +1509,7 @@ function renderBacktest(model) {
         <tbody>${rows}</tbody>
       </table>
     </div>
-    <div class="output-note">‡ Model B's backtest still uses the target cycle's <em>actual</em> realized DXY-at-extreme as an input — a lookahead that real-time forecasting would not have. Even with that advantage, Model B's errors are large; an honest forward-looking version (without lookahead) would likely do worse, not better.</div>
+    <div class="output-note">‡ Model B uses the DXY close available at or before the target halving date, frozen for both peak and trough forecasts. Future DXY-at-extreme is never supplied to a held-out prediction. Missing origin DXY leaves Model B unavailable. All historical forecasts use halving-day close as their origin; the live scenario uses the latest available close.</div>
   </div>
 
   <div class="output-block">
@@ -1967,7 +1971,7 @@ const ExportReport = (() => {
       add("  Projections unavailable (need >=2 completed cycles + 1 ongoing cycle).");
     } else {
       add(`  Trained on n=${model.proj.trainN} completed cycles. Conditioning DXY input for`);
-      add(`  Model B (scenario placeholder, NOT a dollar forecast): ${fmtNum(model.proj.conditioningDxy,2)}`);
+      add(`  Model B (latest available DXY held constant, NOT a dollar forecast): ${fmtNum(model.proj.conditioningDxy,2)}`);
       add("");
       add("  7.1  PROJECTED PEAK");
       add(`       Model A (log-linear / cycle#)   : ${fmtUsd(model.proj.peakModels.A?.value,0)}   R^2(fit)=${fmtNum(model.proj.peakModels.A?.fit?.r2,3)}`);
@@ -1998,11 +2002,11 @@ const ExportReport = (() => {
         add(`  Held out Cycle ${r.targetCycle} (already complete) -- trained blind on Cycles [${r.trainCycles.join(",")}] only`);
         add(`    PEAK   actual=${fmtUsd(r.peak.actual,0)}`);
         if (r.peak.A) add(`           Model A pred=${fmtUsd(r.peak.A.pred,0)}  error=${fmtPct(r.peak.A.err,1,true)}`);
-        if (r.peak.B) add(`           Model B pred=${fmtUsd(r.peak.B.pred,0)}  error=${fmtPct(r.peak.B.err,1,true)}  (uses lookahead DXY input)`);
+        if (r.peak.B) add(`           Model B pred=${fmtUsd(r.peak.B.pred,0)}  error=${fmtPct(r.peak.B.err,1,true)}  (DXY frozen at halving close)`);
         if (r.peak.C) add(`           Model C pred=${fmtUsd(r.peak.C.pred,0)}  error=${fmtPct(r.peak.C.err,1,true)}`);
         add(`    TROUGH actual=${fmtUsd(r.trough.actual, r.trough.actual<10?4:0)}`);
         if (r.trough.A) add(`           Model A pred=${fmtUsd(r.trough.A.pred,0)}  error=${fmtPct(r.trough.A.err,1,true)}`);
-        if (r.trough.B) add(`           Model B pred=${fmtUsd(r.trough.B.pred,0)}  error=${fmtPct(r.trough.B.err,1,true)}  (uses lookahead DXY input)`);
+        if (r.trough.B) add(`           Model B pred=${fmtUsd(r.trough.B.pred,0)}  error=${fmtPct(r.trough.B.err,1,true)}  (DXY frozen at halving close)`);
         if (r.trough.C) add(`           Model C pred=${fmtUsd(r.trough.C.pred,0)}  error=${fmtPct(r.trough.C.err,1,true)}`);
         add("");
       });
@@ -2120,8 +2124,8 @@ function buildModel() {
   const zoneDays = Stats.zoneDaysPerCycle(cycles, btcRaw, DataLayer.dxyOnOrBefore, zoneModel);
   const extremes = Stats.extremesTable(cycles, btcRaw, DataLayer.dxyOnOrBefore);
   const regs = Stats.runRegressions(cycles, extremes.adjusted);
-  const proj = Stats.buildProjections(cycles, extremes.adjusted);
-  const backtestRows = Stats.backtest(cycles, extremes.adjusted);
+  const proj = Stats.buildProjections(cycles, extremes.adjusted, DataLayer.dxyOnOrBefore(btcDatesSorted.at(-1)));
+  const backtestRows = Stats.backtest(cycles, extremes.adjusted, DataLayer.dxyOnOrBefore);
   const snap = Stats.snapshotStats(btcRaw, btcDatesSorted, DataLayer.dxyOnOrBefore, zoneModel, cycles);
   const corr = Stats.returnCorrelation(btcRaw, dxyMap);
   const align = Stats.buildCycleAlignment(cycles, btcRaw, DataLayer.dxyOnOrBefore, zoneModel);
