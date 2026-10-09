@@ -32,18 +32,21 @@ Refresh policy: fetch on load, manual refetch via the header button, and an auto
 
 ## Architecture
 
-```
-index.html          shell, design tokens (CSS), tab strip, load/error states
-data_layer.js        fetch + cache + last-observation-carried-forward DXY lookup
-stats_engine.js       all statistics: cycle construction, zone model, regressions,
-                      projections, backtest — pure functions, no DOM access
-render_views.js       HTML string builders, one function per tab
-export_report.js      plain-text .txt report generator
-app.js                orchestration: tabs, Chart.js wiring, custom chart plugins
-chart.umd.js          vendored Chart.js v4.4.1 (no external CDN dependency)
+`index.html` contains the data layer, pure `Stats` engine, render views, report exporter and app orchestration in separate inline script sections. Chart.js is loaded from a CDN. Data refresh scripts and requirements are in `scripts/` and `requirements.txt`.
+
+Run the dependency-free forecast regression suite with Node.js 24:
+
+```sh
+node --test tests/*.test.cjs
 ```
 
-The statistics engine and the rendering layer are fully separated — `stats_engine.js` never touches the DOM, and every number shown in a table or chart traces back to a single function in that file. This makes it straightforward to unit-test the math independently of the UI (see `validate_stats.py` for the Python cross-check used during development).
+### Forecast integrity
+
+Model B previously evaluated historical forecasts using the target cycle's eventual DXY-at-peak or DXY-at-trough. That leaked future information into the held-out prediction. It now freezes the DXY close available at or before the target halving date for both forecasts. Earlier completed cycles provide the training pairs; later target outcomes are used only to calculate error. Each held-out row displays the forecast origin and its DXY input. Missing origin DXY leaves Model B unavailable, and missing training DXY pairs are excluded rather than coerced to zero.
+
+The live Model B scenario uses the latest DXY close available on or before the latest BTC observation date, held constant as a scenario assumption. It no longer conditions on the open cycle's peak-so-far DXY. Neither live nor historical Model B predicts the future DXY path.
+
+This applies the chronological validation principle described in [PyBroker](https://www.pybroker.com/en/latest/index.html). It remains a browser-native cycle-extreme model, not a PyBroker integration or trading-return backtest. The very small number of completed cycles does not justify bootstrap confidence claims.
 
 ### The one hand-entered constant
 
